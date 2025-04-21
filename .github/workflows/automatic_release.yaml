@@ -1,0 +1,127 @@
+name: Automatic release
+
+on:
+  # (a) GitHub Actionsページから
+  # 手動実行できるように設定する
+  workflow_dispatch:
+    inputs:
+      custom_tag:
+        description: "手動で\
+          リリースバージョン指定する場合は\
+          入力してください (e.g. 3.3.3)"
+        required: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changelog:
+    name: Update Changelog
+    runs-on: ubuntu-latest
+    env:
+      # your_accountは自分のアカウント名に
+      # 読み替える
+      CHANGELOG: "https://github.com/\
+        your_account/try-manage-releases/\
+        blob/main/CHANGELOG.rst"
+      PROJECT: "try-manage-releases"
+    outputs:
+      release_tag: |-
+        ${{ steps.tag_version.outputs.new_tag }}
+
+    steps:
+      # リポジトリをチェックアウト
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python環境をセットアップ
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # (b) リリースバージョンを自動Bump upする
+      - name: Bump up tag version
+        uses: mathieudutour/github-tag-action@v6.2
+        id: tag_version
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          custom_tag: |-
+            ${{ github.event.inputs.custom_tag }}
+          dry_run: true
+
+      # towncrierをインストール
+      - name: Install towncrier
+        run: pip install towncrier==23.11.0
+
+      # (c) towncrierでChangelogを自動更新する
+      - name: Update Changelog
+        run: >
+          towncrier build
+          --yes
+          --version
+          ${{ steps.tag_version.outputs.new_tag }}
+
+      # (d) Changelogの更新をコミットしてGitタグを打ち
+      # リポジトリへpushする
+      - name: Push Changelog with tag
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Update Changelog
+          tagging_message: |-
+            ${{ steps.tag_version.outputs.new_tag }}
+
+      # Changelogヘのリンクを生成
+      - name: Generate Changelog URL
+        id: changelog_url
+        env:
+          NEW_TAG: |-
+            ${{ steps.tag_version.outputs.new_tag }}
+        run: |
+          VERSION=${NEW_TAG//./''}-$(date +'%Y-%m-%d')
+          CHANGELOG_URL=$CHANGELOG#$PROJECT-$VERSION
+          echo url=$CHANGELOG_URL >> $GITHUB_OUTPUT
+
+      # (e) GitHubリリースを作成する
+      - name: Create a GitHub release
+        uses: ncipollo/release-action@v1
+        env:
+          CHANGELOG_URL: |-
+            ${{ steps.changelog_url.outputs.url }}
+        with:
+          tag: |-
+            ${{ steps.tag_version.outputs.new_tag }}
+          name: >-
+            Release
+            ${{ steps.tag_version.outputs.new_tag }}
+          body: |
+            ${{ steps.tag_version.outputs.changelog }}
+
+            [CHANGELOG](${{env.CHANGELOG_URL}})
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    # changelog jobが正常終了したらこのjobを実行する
+    # (needsを指定しないと、changelog jobと並列実行される)
+    needs:
+      - changelog
+
+    # アプリケーション、デプロイ先環境に応じたdeployステップを実行する
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # すべてのタグをfetchする
+          # (fetch-depthを指定しないと、workflowをトリガーしたref/SHAの
+          # コミットのみがfetch される)
+          fetch-depth: 0
+          # changelog jobで打ったリリースバージョンタグのアプリケーションを
+          # チェックアウトする
+          # needsに指定したjobのoutputsは以下のように参照できる
+          ref: ${{ needs.changelog.outputs.release_tag }}
+
+      # チェックアウトしたリリースバージョンのアプリケーションをdeployする
+      - name: Deploy
+        run: echo 'デプロイ (この記事では割愛します)'
